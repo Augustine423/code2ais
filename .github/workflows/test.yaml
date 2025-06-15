@@ -4,7 +4,7 @@ on:
     branches:
       - main
 env:
-  EC2_HOST: ${{ secrets.EC2_HOST }}
+  EC2_HOST_AIS: ${{ secrets.EC2_HOST_AIS }}
   SSH_OPTIONS: -o StrictHostKeyChecking=no -o ConnectTimeout=30
 jobs:
   startup:
@@ -16,22 +16,38 @@ jobs:
         uses: webfactory/ssh-agent@v0.8.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          log-public-key: true # Added for debugging
       - name: Install Docker and Docker Compose on EC2 if not installed
         run: |
-          ssh $SSH_OPTIONS ubuntu@$EC2_HOST '
+          ssh $SSH_OPTIONS ubuntu@$EC2_HOST_AIS '
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
               sudo apt-get update
-              ...
+              sudo apt-get install -y ca-certificates curl
+              sudo install -m 0755 -d /etc/apt/keyrings
+              sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+              sudo chmod a+r /etc/apt/keyrings/docker.asc
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+              sudo usermod -aG docker ubuntu
+              docker --version
+            else
+              echo "Docker already installed"
             fi
             if ! command -v docker-compose &> /dev/null; then
               echo "Installing Docker Compose..."
-              ...
+              sudo curl -L "https://github.com/docker/compose/releases/download/v2.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+              docker-compose --version
+            else
+              echo "Docker Compose already installed"
             fi
           '
       - name: Clone repo on EC2 if not exists
         run: |
-          ssh $SSH_OPTIONS ubuntu@$EC2_HOST '
+          ssh $SSH_OPTIONS ubuntu@$EC2_HOST_AIS '
             available_space=$(df --output=avail / | tail -1)
             if [ "$available_space" -lt 5000000 ]; then
               echo "Error: Insufficient disk space on / (less than 5GB available)"
@@ -40,68 +56,70 @@ jobs:
             sudo chown -R ubuntu:ubuntu /home/ubuntu/code2ais
             chmod -R u+rw /home/ubuntu/code2ais
             if [ ! -d "/home/ubuntu/code2ais" ]; then
-              ...
+              git clone https://${{ secrets.GH_PAT }}@github.com/${{ github.repository }} /home/ubuntu/code2ais
+            else
+              cd /home/ubuntu/code2ais
+              git fetch origin
+              git reset --hard origin/main
+              git pull origin main --verbose 2>&1 | tee /home/ubuntu/code2ais/git-pull.log
+              local_commit=$(git rev-parse HEAD)
+              if [ "$local_commit" != "${{ github.sha }}" ]; then
+                echo "Error: Local commit ($local_commit) does not match pushed commit (${{ github.sha }})"
+                exit 1
+              fi
+            fi
+            if [ ! -d "/home/ubuntu/code2ais/Frontend" ] || [ ! -d "/home/ubuntu/code2ais/Backend" ] || [ ! -d "/home/ubuntu/code2ais/Backend1" ]; then
+              echo "Error: Frontend, Backend, or Backend1 directory missing"
+              ls -la /home/ubuntu/code2ais
+              exit 1
             fi
           '
-      - name: Clean up SSH key
-        if: always()
-        run: |
-          rm -f ~/.ssh/id_rsa
-
   frontend-build:
     runs-on: ubuntu-latest
-    needs: [startup]
+    needs: startup
     steps:
       - name: Set up SSH
         uses: webfactory/ssh-agent@v0.8.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          log-public-key: true
       - name: Build and check Frontend code issues
         run: |
-          ssh $SSH_OPTIONS ubuntu@$EC2_HOST '
+          ssh $SSH_OPTIONS ubuntu@$EC2_HOST_AIS '
             cd /home/ubuntu/code2ais/Frontend || { echo "Frontend directory not found"; ls -la /home/ubuntu/code2ais; exit 1; }
             chmod -R u+w /home/ubuntu/code2ais/Frontend
             docker build -t frontend:${{ github.sha }} .
             docker image prune -f
           '
-
-      - name: Clean up SSH key
-        if: always()
-        run: |
-          rm -f ~/.ssh/id_rsa
-
   backend-build:
     runs-on: ubuntu-latest
-    needs: [startup]
+    needs: [startup, frontend-build]
     steps:
       - name: Set up SSH
         uses: webfactory/ssh-agent@v0.8.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          log-public-key: true
       - name: Build and check Backend code issues
         run: |
-          ssh $SSH_OPTIONS ubuntu@$EC2_HOST '
+          ssh $SSH_OPTIONS ubuntu@$EC2_HOST_AIS '
             cd /home/ubuntu/code2ais/Backend || { echo "Backend directory not found"; ls -la /home/ubuntu/code2ais; exit 1; }
             chmod -R u+w /home/ubuntu/code2ais/Backend
             docker build -t backend:${{ github.sha }} .
             docker image prune -f
           '
-      - name: Clean up SSH key
-        if: always()
-        run: |
-          rm -f ~/.ssh/id_rsa
-
   deploy:
     runs-on: ubuntu-latest
-    needs: [frontend-build,backend-build]
+    needs: [frontend-build, backend-build]
     steps:
       - name: Set up SSH
         uses: webfactory/ssh-agent@v0.8.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          log-public-key: true
       - name: Deploy frontend, backend ...
         run: |
-          ssh $SSH_OPTIONS ubuntu@$EC2_HOST '
+          ssh $SSH_OPTIONS ubuntu@$EC2_HOST_AIS '
             cd /home/ubuntu/code2ais
             if [ ! -f docker-compose.yml ]; then
               echo "Error: docker-compose.yml not found"
