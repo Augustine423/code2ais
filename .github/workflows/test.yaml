@@ -16,7 +16,7 @@ jobs:
         uses: webfactory/ssh-agent@v0.8.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-          log-public-key: true # Added for debugging
+          log-public-key: true
       - name: Install Docker and Docker Compose on EC2 if not installed
         run: |
           ssh $SSH_OPTIONS ubuntu@$EC2_HOST_AIS '
@@ -48,9 +48,18 @@ jobs:
       - name: Clone repo on EC2 if not exists
         run: |
           ssh $SSH_OPTIONS ubuntu@$EC2_HOST_AIS '
+            # Check for running containers to avoid disrupting services
+            if [ -n "$(docker ps -q)" ]; then
+              echo "Warning: Running containers detected, using targeted cleanup"
+              docker image prune -f 2>&1 | tee /home/ubuntu/code2ais/docker-prune.log
+            else
+              echo "No running containers, performing full cleanup"
+              docker system prune -a -f 2>&1 | tee /home/ubuntu/code2ais/docker-prune.log
+            fi
+            # Check disk space after cleanup
             available_space=$(df --output=avail / | tail -1)
             if [ "$available_space" -lt 5000000 ]; then
-              echo "Error: Insufficient disk space on / (less than 5GB available)"
+              echo "Error: Insufficient disk space on / (less than 5GB available) after cleanup"
               exit 1
             fi
             sudo chown -R ubuntu:ubuntu /home/ubuntu/code2ais
@@ -74,6 +83,7 @@ jobs:
               exit 1
             fi
           '
+          
   frontend-build:
     runs-on: ubuntu-latest
     needs: startup
