@@ -83,7 +83,7 @@ jobs:
               exit 1
             fi
           '
-          
+
 
   frontend-build:
     runs-on: ubuntu-latest
@@ -132,11 +132,11 @@ jobs:
         run: |
           ssh $SSH_OPTIONS ubuntu@$EC2_HOST_AIS '
             cd /home/ubuntu/code2ais
-            if [ ! -f docker-compose.yml ]; then
-              echo "Error: docker-compose.yml not found"
+            if [ ! -f docker-compose.yaml ]; then
+              echo "Error: docker-compose.yaml not found"
               exit 1
             fi
-            docker-compose -f docker-compose.yml up -d --build --force-recreate 2>&1 | tee /home/ubuntu/code2ais/docker-compose.log
+            docker-compose -f docker-compose.yaml up -d --build --force-recreate 2>&1 | tee /home/ubuntu/code2ais/docker-compose.log
             docker system prune -a -f
             docker builder prune -f
             echo "Checking running containers..."
